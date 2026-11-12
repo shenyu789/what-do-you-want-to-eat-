@@ -1,6 +1,7 @@
 // M4 健康档案单元测试与异常场景测试。
 #include <string>
 
+#include "service/account_rate_limiter.h"
 #include "service/profile_service.h"
 #include "support/account_fakes.h"
 #include "support/profile_fakes.h"
@@ -32,7 +33,8 @@ ProfileInput valid_input() {
 struct Fixture {
   tnycl::test::FakeProfileRepository profiles;
   tnycl::test::FakeClock clock;
-  ProfileService service{ProfileService::Deps{profiles, clock}};
+  tnycl::account::InMemoryRateLimiter limiter;
+  ProfileService service{ProfileService::Deps{profiles, clock, limiter}};
 };
 
 }  // namespace

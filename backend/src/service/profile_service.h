@@ -21,6 +21,8 @@ class ProfileService {
   struct Deps {
     ProfileRepository& profiles;
     account::Clock& clock;
+    // T-3.06 / 07 §5：读 120/分钟/用户、写 30/分钟/用户（本地降级实现）。
+    account::RateLimiter& limiter;
   };
 
   explicit ProfileService(Deps deps);
