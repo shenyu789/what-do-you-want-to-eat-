@@ -18,6 +18,9 @@ class FakeFoodRepository final : public tnycl::food::FoodRepository {
 
   tnycl::Result<std::vector<tnycl::food::Food>> list_after(
       std::optional<std::uint64_t> after_food_id, int limit) override {
+    if (fail_with.has_value()) {
+      return tnycl::Result<std::vector<tnycl::food::Food>>::err(*fail_with);
+    }
     std::vector<tnycl::food::Food> rows;
     for (const auto& food : foods_) {
       if (!food.active) {
@@ -36,6 +39,9 @@ class FakeFoodRepository final : public tnycl::food::FoodRepository {
 
   tnycl::Result<std::optional<tnycl::food::Food>> find_by_slug(
       std::string_view slug) override {
+    if (fail_with.has_value()) {
+      return tnycl::Result<std::optional<tnycl::food::Food>>::err(*fail_with);
+    }
     for (const auto& food : foods_) {
       if (food.slug == slug) {
         return tnycl::Result<std::optional<tnycl::food::Food>>::ok(
@@ -46,6 +52,9 @@ class FakeFoodRepository final : public tnycl::food::FoodRepository {
   }
 
   tnycl::Result<std::optional<std::uint64_t>> id_by_slug(std::string_view slug) override {
+    if (fail_with.has_value()) {
+      return tnycl::Result<std::optional<std::uint64_t>>::err(*fail_with);
+    }
     for (const auto& food : foods_) {
       if (food.slug == slug) {
         return tnycl::Result<std::optional<std::uint64_t>>::ok(
@@ -62,6 +71,9 @@ class FakeFoodRepository final : public tnycl::food::FoodRepository {
       }
     }
   }
+
+  // 错误注入（数据库异常时服务层行为）；默认不注入。
+  std::optional<tnycl::ErrorCode> fail_with;
 
  private:
   std::vector<tnycl::food::Food> foods_;
