@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -142,13 +143,64 @@ void exec(const std::string& sql, const std::vector<std::string>& params = {}) {
   conn->exec(sql, params);
 }
 
+// ---------------------------------------------------------------------------
+// 真实形态的测试替身（只在本集成套件内使用）
+//
+// 为什么不用 tests/support/account_fakes.h 里的 FakeHasher / FakeTokenSource：
+//   - FakeHasher::hash 返回 "$argon2id$fake$" + 明文口令 —— 哈希里含明文，
+//     于是「库里不得出现明文」这条断言在真实库上必然失败；
+//   - FakeTokenSource::sha256_hex 返回 "sha256:<token>"，不是 64 位十六进制，
+//     与 user_sessions.token_hash CHAR(64)（01-SRS NFR-S-01：32B + SHA-256）不符。
+// 这两条都是**替身的缺陷**，不是产品缺陷，也不是断言写错。单测为别处依赖
+// 保持原样（不动 B 的公共替身），集成套件改用按真实形态产出的版本：
+// 不含明文、64 位十六进制、同输入同输出。
+// ---------------------------------------------------------------------------
+std::string fnv_hex64(std::string_view input) {
+  std::uint64_t h = 1469598103934665603ULL;  // FNV-1a 偏移基
+  for (unsigned char c : input) {
+    h ^= c;
+    h *= 1099511628211ULL;
+  }
+  std::string out;
+  out.reserve(64);
+  std::uint64_t x = h;
+  while (out.size() < 64) {
+    x = x * 6364136223846793005ULL + 1442695040888963407ULL;  // 确定性扩散
+    char buf[20];
+    std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(x));
+    out += buf;
+  }
+  out.resize(64);
+  return out;
+}
+
+class ItHasher final : public tnycl::account::PasswordHasher {
+ public:
+  std::string hash(std::string_view password) override {
+    // 形态贴近 Argon2id 编码串（参数段 + 摘要），但不含明文。
+    return std::string("$argon2id$v=19$m=65536,t=3,p=1$") + fnv_hex64(password);
+  }
+  bool verify(std::string_view password, std::string_view pass_hash) override {
+    return pass_hash == hash(password);
+  }
+};
+
+class ItTokenSource final : public tnycl::account::TokenSource {
+ public:
+  std::string generate() override { return "it-token-" + std::to_string(++counter_); }
+  std::string sha256_hex(std::string_view token) override { return fnv_hex64(token); }
+
+ private:
+  int counter_{0};
+};
+
 struct World {
   tnycl::repository::MySqlUserRepository users{pool()};
   tnycl::repository::MySqlSessionRepository sessions{pool()};
   tnycl::repository::MySqlProfileRepository profiles{pool()};
   tnycl::repository::MySqlFoodRepository foods{pool()};
-  tnycl::test::FakeHasher hasher;
-  tnycl::test::FakeTokenSource tokens;
+  ItHasher hasher;
+  ItTokenSource tokens;
   tnycl::test::FakeClock clock;
   tnycl::account::InMemoryRateLimiter limiter;
   tnycl::profile::ProfileService profile_service{
