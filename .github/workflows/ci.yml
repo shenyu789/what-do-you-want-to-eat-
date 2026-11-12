@@ -147,9 +147,15 @@ jobs:
                    --output-junit ctest-report.xml 2>&1) || rc=$?
           rc=${rc:-0}
           printf '%s\n' "$out"
+          # 无论成败都把测试汇总发成注释：成功时 annotation 是唯一能
+          # 免登录读到的「到底跑了几个测试」的证据，避免只凭状态色推断。
+          summary=$(printf '%s\n' "$out" | grep -E "tests passed|tests failed|tests did not run|Skipped" | tr '\n' ' ')
           if [ "$rc" -ne 0 ]; then
-            printf '%s\n' "$out" | grep -E "Failed|FAILED|tests failed" | head -5 | \
-              while IFS= read -r l; do echo "::error title=ctest::${l}"; done
+            echo "::error title=ctest::${summary:-rc=$rc}"
+            printf '%s\n' "$out" | grep -E "Failed|FAILED" | head -5 | \
+              while IFS= read -r l; do echo "::error title=ctest-case::${l}"; done
+          else
+            echo "::notice title=ctest-passed::${summary:-all passed}"
           fi
           exit "$rc"
 
