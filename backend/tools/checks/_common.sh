@@ -20,8 +20,11 @@ strip_comments() {
     while IFS= read -r line; do
         content=${line#*:*:}                 # 去掉 path:line: 前缀
         trimmed=$(printf '%s' "$content" | sed 's/^[[:space:]]*//')
+        # 只跳过块注释内部行。**绝不能跳过以 # 开头的行**——
+        # 预处理指令是代码，而 third_party_includes / no_sqlite 要抓的违规
+        # 恰恰就是 `#include <mysql.h>` 这类行（I-05：跳过它会让自检变成假门禁）。
         case "$trimmed" in
-            '/*'*|'*'*|'#'*) continue ;;      # 块注释/预处理指令整行跳过
+            '/*'*|'*'*) continue ;;
         esac
         code=${content%%//*}                 # 截断行尾注释
         if printf '%s' "$code" | grep -qE ${GREP_FLAGS} -e "$pattern"; then
