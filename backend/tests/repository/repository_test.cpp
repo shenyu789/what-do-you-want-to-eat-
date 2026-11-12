@@ -192,8 +192,14 @@ TNYCL_TEST(FoodListAfterBuildsCursorPredicateAndParsesRows) {
   CHECK(rows.value().front().active);
   CHECK(has(fx.pool.state->sqls.back(), "WHERE active = 1"));
   CHECK(has(fx.pool.state->sqls.back(), "food_id > ?"));
+  CHECK_EQ(fx.pool.state->params.back().size(), std::size_t{1});
   CHECK_EQ(fx.pool.state->params.back().at(0), std::string("2"));
-  CHECK_EQ(fx.pool.state->params.back().at(1), std::string("21"));
+  // LIMIT **不是**绑定参数：DbConn 把所有参数按 MYSQL_TYPE_STRING 发送，
+  // 而 MySQL 预处理语句的 LIMIT 必须是整数字面量，绑定字符串会报
+  // ERROR 1210。这个缺陷 FakeDb 永远发现不了——只有真实库集成测试才暴露，
+  // 因此这里断言 SQL 文本里的字面量，而不是 params。
+  CHECK(has(fx.pool.state->sqls.back(), "LIMIT 21"));
+  CHECK(!has(fx.pool.state->sqls.back(), "LIMIT ?"));
 }
 
 TNYCL_TEST(FoodWithoutCursorOmitsPredicate) {
@@ -201,7 +207,8 @@ TNYCL_TEST(FoodWithoutCursorOmitsPredicate) {
   fx.pool.state->responses.push_back(tnycl::test::make_result({}));
   CHECK(fx.foods.list_after(std::nullopt, 20).is_ok());
   CHECK(!has(fx.pool.state->sqls.back(), "food_id > ?"));
-  CHECK_EQ(fx.pool.state->params.back().size(), std::size_t{1});
+  CHECK_EQ(fx.pool.state->params.back().size(), std::size_t{0});
+  CHECK(has(fx.pool.state->sqls.back(), "LIMIT 20"));
 }
 
 TNYCL_TEST(FoodFindAndSlugLookup) {

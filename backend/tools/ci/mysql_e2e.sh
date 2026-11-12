@@ -208,6 +208,21 @@ if [ "$test_rc" -eq 77 ]; then
   fail test-skipped "集成可执行体返回 77（跳过），真实库尚未被验证，集成 job 不允许跳过"
 fi
 if [ "$test_rc" -ne 0 ]; then
+  # GitHub 的 job 日志需要登录才能读（匿名 API 返回 403）。
+  # 所以把**失败用例的原始断言**转成 ::error 注释：注释免登录可读，
+  # 是唯一能在不登录的情况下定位"到底是哪个场景、哪一行断言失败"的手段。
+  detail=$(grep -E '^\[FAIL\]|^  FAIL ' "$TEST_LOG" | head -8 || true)
+  if [ -n "$detail" ]; then
+    printf '%s\n' "$detail" | while IFS= read -r l; do
+      printf '::error title=case-failed::%s\n' "$l"
+    done
+  else
+    tail -10 "$TEST_LOG" | while IFS= read -r l; do
+      printf '::error title=test-output::%s\n' "$l"
+    done
+  fi
+  summary_line=$(grep -E '^checks=' "$TEST_LOG" | tail -1 || true)
+  [ -n "$summary_line" ] && printf '::notice title=checks::%s\n' "$summary_line"
   fail test-failed "集成可执行体退出码 $test_rc（详见 $TEST_LOG）"
 fi
 
@@ -225,7 +240,9 @@ checks=$(grep -oE 'checks=[0-9]+' "$TEST_LOG" | tail -1)
 ok "$pass_n 个场景全部通过（$checks failures=0，要求下限 $MIN_CASES），可执行体退出码 0"
 
 # ------------------------------------------- 9. 清理与隔离：测试不得留脏数据
-left_users=$(scalar "SELECT COUNT(*) FROM users WHERE username LIKE 'it\\_%';")
+# 用 REGEXP 而非 LIKE：MySQL 字符串字面量里 \_ 会被吞成 _，LIKE 就变成通配符，
+# 断言会从"精确判断残留"退化成"差不多匹配"。REGEXP 里 _ 天然是字面量。
+left_users=$(scalar "SELECT COUNT(*) FROM users WHERE username REGEXP '^it_';")
 expect_eq "$left_users" "0" "测试残留用户数（隔离/清理）"
 left_sessions=$(scalar "SELECT COUNT(*) FROM user_sessions s LEFT JOIN users u ON u.user_id=s.user_id WHERE u.user_id IS NULL;")
 expect_eq "$left_sessions" "0" "孤儿会话数"

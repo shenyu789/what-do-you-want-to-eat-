@@ -63,8 +63,13 @@ tnycl::Result<std::vector<food::Food>> MySqlFoodRepository::list_after(
     sql += " AND food_id > ?";
     params.push_back(std::to_string(*after_food_id));
   }
-  sql += " ORDER BY food_id ASC LIMIT ?";
-  params.push_back(std::to_string(limit));
+  // LIMIT 不能作为占位符参数绑定：DbConn 契约把所有参数按 MYSQL_TYPE_STRING 发送，
+  // 而 MySQL 预处理语句的 LIMIT 必须是整数字面量，绑定字符串会报
+  // ERROR 1210 (Incorrect arguments to mysqld_stmt_execute)。
+  // 这里 limit 是调用方已校验过的 int（FoodService 保证 1–50，实际传 page_size+1），
+  // 拼成字面量不引入注入面；再做一次下界/上界夹取，防止 0、负数或异常大值。
+  const int safe_limit = limit < 1 ? 1 : (limit > 1000 ? 1000 : limit);
+  sql += " ORDER BY food_id ASC LIMIT " + std::to_string(safe_limit);
 
   DbConn::Result result;
   try {
