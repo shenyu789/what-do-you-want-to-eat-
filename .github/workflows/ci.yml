@@ -1,0 +1,126 @@
+name: ci
+
+# B-01 决策：Ubuntu 验收证据**只**来自 GitHub Actions 的 ubuntu-24.04 runner。
+# 本地 Windows/MSYS2 的编译结果不作为验收依据（协作规则 14）。
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_DIR: backend/build
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  build-and-test:
+    name: ubuntu-24.04 / gcc-13 / c++20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 GCC 13 与 CMake（3.28+）
+        run: |
+          sudo apt-get update -qq
+          # nlohmann-json3-dev：tnycl/api_response.h 的编译依赖（缺失会让首个
+          # include 它的 TU 报 "nlohmann/json.hpp: No such file or directory"）
+          sudo apt-get install -y -qq g++-13 gcc-13 cmake ninja-build nlohmann-json3-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+
+      - name: 打印并校验工具链版本（不通过即失败）
+        run: |
+          set -euo pipefail
+          echo "=== uname ==="; uname -a
+          echo "=== gcc ==="; gcc --version | head -1
+          echo "=== g++ ==="; g++ --version | head -1
+          echo "=== cmake ==="; cmake --version | head -1
+
+          gcc_major=$(gcc -dumpversion | cut -d. -f1)
+          cxx_major=$(g++ -dumpversion | cut -d. -f1)
+          cmake_ver=$(cmake --version | head -1 | awk '{print $3}')
+
+          [ "$gcc_major" -ge 13 ] || { echo "::error::GCC 需 >= 13，实际 $gcc_major"; exit 1; }
+          [ "$cxx_major" -ge 13 ] || { echo "::error::G++ 需 >= 13，实际 $cxx_major"; exit 1; }
+          if [ "$(printf '%s\n3.28\n' "$cmake_ver" | sort -V | head -1)" != "3.28" ]; then
+            echo "::error::CMake 需 >= 3.28，实际 $cmake_ver"; exit 1
+          fi
+          echo "toolchain OK"
+
+      - name: 静态检查有效性自检（证明六项检查不是假门禁）
+        working-directory: backend
+        run: bash tools/checks/run_all.sh --self-test
+
+      - name: 六项静态检查（T-1.03）
+        working-directory: backend
+        run: bash tools/checks/run_all.sh
+
+      - name: 配置
+        run: |
+          cmake -S backend -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DBUILD_WITH_STRICT_TOOLCHAIN=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: 编译（告警即错误）
+        run: cmake --build "$BUILD_DIR" --parallel
+
+      - name: 测试
+        run: ctest --test-dir "$BUILD_DIR" --output-on-failure --output-junit ctest-report.xml
+
+      - name: 保存构建与测试结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            backend/build/ctest-report.xml
+            backend/build/compile_commands.json
+            backend/build/Testing/**
+            backend/build/*.log
+
+  # 集成测试（MySQL + Redis）—— 决策要求"后续增加"，W3 起启用。
+  # 启用前置：migrations/V001 可空库跑通 + 仓储层实现落地。
+  #
+  # integration:
+  #   name: integration / mysql-8 + redis-7
+  #   runs-on: ubuntu-24.04
+  #   needs: build-and-test
+  #   services:
+  #     mysql:
+  #       image: mysql:8.0
+  #       env:
+  #         MYSQL_ROOT_PASSWORD: root
+  #         MYSQL_DATABASE: eat_test
+  #       ports: ['3306:3306']
+  #       options: >-
+  #         --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+  #         --health-interval=5s --health-timeout=5s --health-retries=20
+  #     redis:
+  #       image: redis:7
+  #       ports: ['6379:6379']
+  #       options: >-
+  #         --health-cmd="redis-cli ping"
+  #         --health-interval=5s --health-timeout=3s --health-retries=20
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: 空库跑迁移
+  #       run: mysql -h127.0.0.1 -uroot -proot eat_test < backend/migrations/V001__init.sql
+  #     - name: 断言无分区表 / 唯一键存在
+  #       run: |
+  #         mysql -h127.0.0.1 -uroot -proot -N -e \
+  #           "SELECT COUNT(*) FROM information_schema.partitions
+  #            WHERE table_schema='eat_test' AND partition_name IS NOT NULL" \
+  #           | grep -qx 0
