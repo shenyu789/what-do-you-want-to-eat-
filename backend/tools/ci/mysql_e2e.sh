@@ -249,6 +249,13 @@ expect_eq "$left_sessions" "0" "孤儿会话数"
 ok "测试数据已清理、用例间隔离（残留 users=0，孤儿 sessions=0）"
 
 # --------------------------------------------------------------- 10. 汇总
+# 成功路径也发注解：GitHub 的 job 日志需要登录才能读，而"跑了几个场景、多少个断言、
+# 连的是哪个库版本"恰恰是验收必须能免登录核验的数字（与主门禁的 ::notice 一致）。
+printf '::notice title=e4-scenarios::%s 个场景通过 / 0 失败（%s），真实库 MySQL %s\n' \
+  "$pass_n" "$checks" "$version"
+printf '::notice title=e4-migrations::V001 17 表 / 0 分区；V002 连续 3 次幂等（种子恒 6）；同名不同 slug 以 ERROR 1062 拒绝且未误更新其他行\n'
+printf '::notice title=e4-cleanup::库 %s：残留 users=0，孤儿 sessions=0（用例间隔离成立）\n' "$DBNAME"
+
 say "=============================================================="
 say "E4 证据汇总（全部为真实 MySQL $version 上执行所得）"
 say "  库            : $DBNAME @ $HOST:$PORT"
