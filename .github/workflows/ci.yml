@@ -55,13 +55,48 @@ jobs:
           fi
           echo "toolchain OK"
 
+      # 逐脚本执行，并把失败原因写进 ::error 注释（注释无需登录即可读，
+      # 日志需要登录；这个区别决定了能否远程定位 Ubuntu-only 失败）。
+      - name: 环境诊断（只打印，不判定）
+        working-directory: backend
+        run: |
+          echo "pwd=$(pwd)"
+          echo "bash=$BASH_VERSION"
+          echo "grep=$(grep --version | head -1)"
+          echo "files=$(find src include -type f 2>/dev/null | wc -l)"
+          echo "checks=$(ls -1 tools/checks/check_*.sh | wc -l)"
+
       - name: 静态检查有效性自检（证明六项检查不是假门禁）
         working-directory: backend
-        run: bash tools/checks/run_all.sh --self-test
+        run: |
+          set -uo pipefail
+          fail=0
+          for c in tools/checks/check_*.sh; do
+            out=$(bash "$c" --self-test 2>&1); rc=$?
+            echo "--- $c rc=$rc"; echo "$out"
+            if [ $rc -ne 0 ] || ! printf '%s' "$out" | grep -q 'SELFTEST PASS'; then
+              msg=$(printf '%s' "$out" | grep -E 'SELFTEST|✗|FAIL' | head -2 | tr '\n' ' ')
+              echo "::error file=$c,title=自检失败::rc=$rc ${msg}"
+              fail=1
+            fi
+          done
+          exit $fail
 
       - name: 六项静态检查（T-1.03）
         working-directory: backend
-        run: bash tools/checks/run_all.sh
+        run: |
+          set -uo pipefail
+          fail=0
+          for c in tools/checks/check_*.sh; do
+            out=$(bash "$c" 2>&1); rc=$?
+            echo "--- $c rc=$rc"; echo "$out"
+            if [ $rc -ne 0 ]; then
+              msg=$(printf '%s' "$out" | grep -E '✗|FAIL|No such|Permission' | head -3 | tr '\n' ' ')
+              echo "::error file=$c,title=静态检查失败::rc=$rc ${msg}"
+              fail=1
+            fi
+          done
+          exit $fail
 
       - name: 配置
         run: |
