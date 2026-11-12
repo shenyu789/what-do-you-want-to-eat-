@@ -32,7 +32,10 @@ jobs:
           sudo apt-get update -qq
           # nlohmann-json3-dev：tnycl/api_response.h 的编译依赖（缺失会让首个
           # include 它的 TU 报 "nlohmann/json.hpp: No such file or directory"）
-          sudo apt-get install -y -qq g++-13 gcc-13 cmake ninja-build nlohmann-json3-dev
+          # libargon2-dev：T-3.02 密码哈希的生产原语。缺它时源码会走 stub 分支
+          # （编译通过但 hash 运行即抛），属于"CI 绿、生产崩"，必须装上。
+          sudo apt-get install -y -qq g++-13 gcc-13 cmake ninja-build \
+            nlohmann-json3-dev libargon2-dev pkg-config
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 

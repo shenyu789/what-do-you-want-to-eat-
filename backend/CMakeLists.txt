@@ -86,6 +86,32 @@ target_link_libraries(tnycl_core
   PRIVATE eat_warnings)
 
 # ============================================================================
+# libargon2：T-3.02 密码哈希的生产原语（cmake/FindArgon2.cmake 由 Agent B 提供，
+# 按该文件注释「由协调者在 CMakeLists.txt 中接线」在此接线）。
+#
+# 为什么必须在验收构建里硬失败：无库时 argon2_hasher.cpp 会走 stub 分支——
+# 编译能过、单元测试可能全绿，但 hash/verify 一调用就抛异常。
+# 这种"CI 绿、生产崩"的组合比直接编不过更危险，所以 BUILD_WITH_STRICT_TOOLCHAIN=ON
+# （验收构建）时缺库直接 FATAL_ERROR；本地开发构建才允许走 stub。
+# ============================================================================
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+find_package(Argon2 QUIET)
+if(TARGET Argon2::Argon2)
+  message(STATUS "libargon2: 已找到，启用真实 Argon2id 实现")
+  target_compile_definitions(tnycl_core PRIVATE TNYCL_HAVE_ARGON2=1)
+  target_link_libraries(tnycl_core PRIVATE Argon2::Argon2)
+elseif(BUILD_WITH_STRICT_TOOLCHAIN)
+  message(FATAL_ERROR
+    "验收构建要求 libargon2（Ubuntu: apt install libargon2-dev）。"
+    "缺库时 hash/verify 会在运行时抛异常，不允许以 stub 通过验收。")
+else()
+  message(WARNING
+    "未找到 libargon2：本次构建使用 stub（hash/verify 会抛异常），"
+    "仅用于本地编译检查。验收必须安装 libargon2-dev。")
+endif()
+
+
+# ============================================================================
 # 可执行体（T-1.01 骨架）
 # ============================================================================
 add_executable(eat_server src/main.cpp)
@@ -109,6 +135,11 @@ foreach(test_src ${EAT_TEST_SOURCES})
   )
   target_link_libraries(${test_name} PRIVATE tnycl_core eat_warnings)
   add_test(NAME ${test_name} COMMAND ${test_name})
+  # 退出码 77 = "跳过"（autotools 约定）：
+  # 需要真实 MySQL/Redis 的集成用例在环境不具备时返回 77，
+  # ctest 应报 Skipped 而不是 Failed —— 否则没有 DB 的 CI 永远不可能绿。
+  # 注意："跳过"在报告里仍然可见，不会伪装成通过。
+  set_tests_properties(${test_name} PROPERTIES SKIP_RETURN_CODE 77)
 endforeach()
 
 if(NOT EAT_TEST_SOURCES)
