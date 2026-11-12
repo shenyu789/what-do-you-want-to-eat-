@@ -99,7 +99,11 @@ void Logger::log(LogLevel level, std::string_view msg, std::string_view trace_id
   line += ts;
   line += ".";
   char ms_buf[8];
-  std::snprintf(ms_buf, sizeof(ms_buf), "%03lld", ms % 1000);
+  // %lld 在 Windows 对、在 Linux 错：int64_t 在 LLP64 是 long long、在 LP64 是 long。
+  // GCC 13 + -Werror=format= 会直接报错（CI run #5 实测）。
+  // ms % 1000 的值域是 0..999，用 int 与 %03d 即可，跨平台无歧义。
+  std::snprintf(ms_buf, sizeof(ms_buf), "%03d",
+                static_cast<int>(ms % 1000));
   line += ms_buf;
   line += "\",\"level\":\"";
   line += level_name(level);

@@ -15,6 +15,29 @@
 -- 不写 food_id：交给 AUTO_INCREMENT，避免"显式 id 与既有数据抢主键"。
 
 
+-- ================================================================ 前置校验
+-- V001 必须同时提供 uk_slug 与 uk_name；缺任一则本迁移的语义不成立，必须中止。
+--
+-- 实现方式说明（协调者改）：
+-- 原方案用「TEMPORARY TABLE + CHECK 约束」制造硬失败。但 MySQL 对临时表上
+-- CHECK 约束的支持是**版本相关**的（可能被忽略、也可能在建表时报错），
+-- 两种结果都不可接受：被忽略=守卫形同不存在；报错=整个迁移无谓中止。
+-- 改为**可移植的标量子查询守卫**：条件不满足时子查询返回 2 行，
+-- MySQL 必报 ERROR 1242 (Subquery returns more than 1 row) → 迁移中止；
+-- 条件满足时返回 0 行 → 赋 NULL，脚本继续。5.7/8.0 行为一致，不依赖临时表。
+SET @uk_count := (SELECT COUNT(DISTINCT index_name)
+                    FROM information_schema.statistics
+                   WHERE table_schema = DATABASE()
+                     AND table_name = 'foods'
+                     AND index_name IN ('uk_slug', 'uk_name'));
+
+-- @uk_count = 2 时无行；否则 2 行 → ERROR 1242，迁移在此中止
+SET @uk_guard := (SELECT 1 FROM (SELECT 1 AS n UNION ALL SELECT 2) t
+                   WHERE @uk_count <> 2);
+
+SELECT IF(@uk_count = 2, 'uk_ok', CONCAT('uk_bad:', @uk_count)) AS uk_assert;
+
+
 -- ---------------------------------------------------------------- lemon-chicken
 SET @exists := (SELECT COUNT(*) FROM foods WHERE slug = 'lemon-chicken');
 
@@ -116,6 +139,20 @@ UPDATE foods
 -- CI/迁移 runner 必须断言输出为 seed_ok；否则判迁移失败。
 SELECT IF(COUNT(*) = 6, 'seed_ok', CONCAT('seed_bad:', COUNT(*))) AS seed_assert
   FROM foods WHERE slug IN ('lemon-chicken','tomato-beef','mushroom-soup','shrimp-pasta','vegetable-rice','pepper-chicken');
+
+-- 期望：0 行（slug 未被重复插入，说明 uk_slug 生效且守卫有效）。
+SELECT slug, COUNT(*) AS dup_count
+  FROM foods
+ WHERE slug IN ('lemon-chicken','tomato-beef','mushroom-soup','shrimp-pasta','vegetable-rice','pepper-chicken')
+ GROUP BY slug
+HAVING COUNT(*) > 1;
+
+-- 期望：0 行（6 条种子的 name 互不重复，也未与任何其他 slug 同名）。
+SELECT name, COUNT(DISTINCT slug) AS slug_count
+  FROM foods
+ WHERE name IN ('柠檬鸡胸能量碗','番茄牛腩盖饭','菌菇鸡汤面','蒜香虾仁意面','时蔬豆腐拌饭','藤椒鸡丝拌面')
+ GROUP BY name
+HAVING COUNT(DISTINCT slug) > 1;
 
 -- rollback（仅在需要回滚种子时手动执行）：
 -- DELETE FROM foods WHERE slug IN ('lemon-chicken','tomato-beef','mushroom-soup','shrimp-pasta','vegetable-rice','pepper-chicken');
