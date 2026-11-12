@@ -1,0 +1,64 @@
+# ===== 编译产物 / 构建目录 =====
+build/
+out/
+bin/
+lib/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.pdb
+*.ilk
+*.exp
+*.d
+
+# ===== Python（本地静态服务可能产生） =====
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== IDE / 编辑器缓存 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.suo
+*.user
+*.autosave
+
+# ===== 日志 =====
+logs/
+*.log
+
+# ===== 敏感配置（禁止提交） =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.*
+config.local.*
+*.local.json
+
+# ===== 系统 / 临时文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+tmp/
+temp/
+*.tmp
+.cache/
