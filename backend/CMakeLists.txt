@@ -57,6 +57,45 @@ target_compile_options(eat_warnings INTERFACE -Wall -Wextra -Werror)
 target_compile_features(eat_warnings INTERFACE cxx_std_20)
 
 # ============================================================================
+# MySQL 客户端发现（T-2.04）：src/adapters/mysql_conn.cpp 需要 <mysql.h> + libmysqlclient。
+#
+# 为什么现在必须显式找库：CMakeLists 此前从未提过 MySQL，而 mysql_conn.cpp
+# 又一直处于**未入库**状态 —— 也就是说这个适配层从未被任何一次 CI 编译过。
+# 一旦把它纳入构建却仍不显式声明依赖，失败会以 "mysql.h: No such file" 的形式
+# 指向源码，而不指向真正原因（缺 libmysqlclient-dev），排查成本极高。
+#
+# 查找顺序：pkg-config(mysqlclient) → find_path/find_library 兜底。
+# 两者都失败时**不在这里报错**，只记录 EAT_MYSQL_FOUND=OFF；
+# 是否致命由下方"核心库"块按 BUILD_WITH_STRICT_TOOLCHAIN 决定。
+# ============================================================================
+set(EAT_MYSQL_FOUND OFF)
+set(EAT_MYSQL_LINK "")
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(MYSQLCLIENT QUIET IMPORTED_TARGET mysqlclient)
+  if(TARGET PkgConfig::MYSQLCLIENT)
+    set(EAT_MYSQL_FOUND ON)
+    set(EAT_MYSQL_LINK PkgConfig::MYSQLCLIENT)
+  endif()
+endif()
+
+if(NOT EAT_MYSQL_FOUND)
+  # 兜底：直接用 find_path/find_library（无 pkg-config，或包未提供 .pc）
+  find_path(MYSQL_INCLUDE_DIR NAMES mysql.h PATH_SUFFIXES mysql)
+  find_library(MYSQL_LIBRARY NAMES mysqlclient mysqlclient_r)
+  if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
+    set(EAT_MYSQL_FOUND ON)
+  endif()
+endif()
+
+if(EAT_MYSQL_FOUND)
+  message(STATUS "libmysqlclient: 已找到（${EAT_MYSQL_LINK}${MYSQL_LIBRARY}）")
+else()
+  message(STATUS "libmysqlclient: 未找到")
+endif()
+
+# ============================================================================
 # 核心库：src/ 下除 main.cpp 外的全部实现
 # CONFIGURE_DEPENDS 让新增源文件不必手改本文件（W1 期间各 Agent 并行加文件）
 # ============================================================================
@@ -65,6 +104,24 @@ file(GLOB_RECURSE EAT_CORE_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM EAT_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/empty_tu.cpp)   # 占位 TU 只在无实现时才用
+
+# mysql_conn.cpp 是唯一依赖 <mysql.h> 的 TU。缺库时：
+#   - 验收构建（BUILD_WITH_STRICT_TOOLCHAIN=ON，即 Ubuntu CI）→ FATAL_ERROR，
+#     绝不允许"编不过就静默跳过"，否则集成证据永远拿不到却看着像绿；
+#   - 本地构建（Windows/MinGW 无 libmysqlclient）→ 排除该 TU，
+#     让其余单测仍可编译；此时 mysql_integration_test 找不到 TNYCL_HAVE_MYSQL，
+#     main 会以退出码 1 报"阻塞"，不会伪装成 77 跳过。
+if(NOT EAT_MYSQL_FOUND)
+  if(BUILD_WITH_STRICT_TOOLCHAIN)
+    message(FATAL_ERROR
+      "验收构建要求 libmysqlclient（Ubuntu: apt install libmysqlclient-dev）。"
+      "缺库时 src/adapters/mysql_conn.cpp 无法编译，真实 MySQL 集成证据无从产生。")
+  endif()
+  list(REMOVE_ITEM EAT_CORE_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/adapters/mysql_conn.cpp)
+  message(WARNING
+    "未找到 libmysqlclient：本次构建排除 mysql_conn.cpp（该构建不具备真实 MySQL 集成能力）")
+endif()
 
 if(EAT_CORE_SOURCES)
   add_library(tnycl_core STATIC ${EAT_CORE_SOURCES})
@@ -84,6 +141,23 @@ target_include_directories(tnycl_core PUBLIC
 target_link_libraries(tnycl_core
   PUBLIC Threads::Threads nlohmann_json::nlohmann_json
   PRIVATE eat_warnings)
+
+# ============================================================================
+# libmysqlclient 链接（T-2.04）
+# TNYCL_HAVE_MYSQL 用 PUBLIC：mysql_integration_test 需要它来决定是否接线真实连接池
+# （#ifdef 在测试侧，而非把 <mysql.h> 泄漏进测试 TU —— D-04 只允许 adapters 层碰 C 头）。
+# PRIVATE 链接：静态库的 PRIVATE 依赖仍会以 LINK_ONLY 传给最终可执行体，
+# 保证测试二进制能解析 mysql_* 符号，同时不污染其他目标的编译接口。
+# ============================================================================
+if(EAT_MYSQL_FOUND)
+  target_compile_definitions(tnycl_core PUBLIC TNYCL_HAVE_MYSQL=1)
+  if(EAT_MYSQL_LINK)
+    target_link_libraries(tnycl_core PRIVATE ${EAT_MYSQL_LINK})
+  else()
+    target_include_directories(tnycl_core PRIVATE ${MYSQL_INCLUDE_DIR})
+    target_link_libraries(tnycl_core PRIVATE ${MYSQL_LIBRARY})
+  endif()
+endif()
 
 # ============================================================================
 # libargon2：T-3.02 密码哈希的生产原语（cmake/FindArgon2.cmake 由 Agent B 提供，

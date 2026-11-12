@@ -34,8 +34,11 @@ jobs:
           # include 它的 TU 报 "nlohmann/json.hpp: No such file or directory"）
           # libargon2-dev：T-3.02 密码哈希的生产原语。缺它时源码会走 stub 分支
           # （编译通过但 hash 运行即抛），属于"CI 绿、生产崩"，必须装上。
+          # libmysqlclient-dev：T-2.04 的 adapters/mysql_conn.cpp 需要 <mysql.h> 与
+          # libmysqlclient。验收构建（BUILD_WITH_STRICT_TOOLCHAIN=ON）缺它会直接
+          # FATAL_ERROR —— 这是刻意的：不允许"编不过就跳过 MySQL 适配层"。
           sudo apt-get install -y -qq g++-13 gcc-13 cmake ninja-build \
-            nlohmann-json3-dev libargon2-dev pkg-config
+            nlohmann-json3-dev libargon2-dev libmysqlclient-dev pkg-config
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
 
@@ -172,36 +175,181 @@ jobs:
             backend/build/Testing/**
             backend/build/*.log
 
-  # 集成测试（MySQL + Redis）—— 决策要求"后续增加"，W3 起启用。
-  # 启用前置：migrations/V001 可空库跑通 + 仓储层实现落地。
+  # ==========================================================================
+  # 集成测试（真实 MySQL 8）—— E4 证据的**唯一**来源
   #
-  # integration:
-  #   name: integration / mysql-8 + redis-7
-  #   runs-on: ubuntu-24.04
-  #   needs: build-and-test
-  #   services:
-  #     mysql:
-  #       image: mysql:8.0
-  #       env:
-  #         MYSQL_ROOT_PASSWORD: root
-  #         MYSQL_DATABASE: eat_test
-  #       ports: ['3306:3306']
-  #       options: >-
-  #         --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
-  #         --health-interval=5s --health-timeout=5s --health-retries=20
-  #     redis:
-  #       image: redis:7
-  #       ports: ['6379:6379']
-  #       options: >-
-  #         --health-cmd="redis-cli ping"
-  #         --health-interval=5s --health-timeout=3s --health-retries=20
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: 空库跑迁移
-  #       run: mysql -h127.0.0.1 -uroot -proot eat_test < backend/migrations/V001__init.sql
-  #     - name: 断言无分区表 / 唯一键存在
-  #       run: |
-  #         mysql -h127.0.0.1 -uroot -proot -N -e \
-  #           "SELECT COUNT(*) FROM information_schema.partitions
-  #            WHERE table_schema='eat_test' AND partition_name IS NOT NULL" \
-  #           | grep -qx 0
+  # 与 build-and-test 的职责分工（刻意不合并）：
+  #   - build-and-test：无数据库，编译 + 单测门禁；集成用例无 TNYCL_MYSQL_HOST，
+  #                     以 77 退出并显示 Skipped —— 那是"没跑"，不是"通过"。
+  #   - 本 job        ：空库 → V001 → V002×3（幂等/不误伤）→ 冲突负向
+  #                     → 11 个真实场景 → 清理与隔离断言，且 **77 视为失败**。
+  # 合并会掩盖关键区别："编译过了但库没起来" 与 "代码错了" 必须一眼可分。
+  #
+  # 数据库：独立库 tnycl_it_ci，不复用任何既有库，也不设 MYSQL_DATABASE
+  # （避免镜像顺手建库导致"空库"前提不成立）。
+  # ==========================================================================
+  mysql-integration:
+    name: integration / mysql-8.0（真实库 E4）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: tnycl_ci_root
+          # 显式创建 root@'%'：runner 经 docker 端口映射连入，源地址不是 localhost。
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ptnycl_ci_root"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+      # Redis 7 仅"备好容器"，**不构成**真实 Redis 集成证据：
+      # A 的真实客户端尚未接入，FakeRedis 测试不得冒充 Redis 验收。
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      BUILD_DIR: backend/build
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      TNYCL_MYSQL_HOST: 127.0.0.1
+      TNYCL_MYSQL_PORT: '3306'
+      TNYCL_MYSQL_USER: root
+      TNYCL_MYSQL_PASSWORD: tnycl_ci_root
+      TNYCL_MYSQL_DB: tnycl_it_ci
+      TNYCL_MYSQL_POOL_SIZE: '4'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装工具链与 MySQL 客户端
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-13 gcc-13 cmake ninja-build \
+            nlohmann-json3-dev libargon2-dev libmysqlclient-dev pkg-config redis-tools
+          if ! command -v mysql >/dev/null 2>&1; then
+            sudo apt-get install -y -qq mysql-client
+          fi
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+          echo "=== gcc ==="; gcc --version | head -1
+          echo "=== cmake ==="; cmake --version | head -1
+          echo "=== mysql client ==="; mysql --version
+          # 只做信息输出：即使没有 .pc，CMakeLists 还有 find_path/find_library 兜底。
+          echo "=== mysqlclient pc ==="; pkg-config --modversion mysqlclient || echo "(无 .pc，走 find_path 兜底)"
+
+      - name: 校验服务端可达并打印真实版本（连接证据）
+        run: |
+          set -euo pipefail
+          mysql -h"$TNYCL_MYSQL_HOST" -P"$TNYCL_MYSQL_PORT" -u"$TNYCL_MYSQL_USER" \
+                -p"$TNYCL_MYSQL_PASSWORD" -N -B -e \
+                "SELECT VERSION(), @@version_comment, @@character_set_server, @@collation_server;"
+          version=$(mysql -h"$TNYCL_MYSQL_HOST" -P"$TNYCL_MYSQL_PORT" -u"$TNYCL_MYSQL_USER" \
+                    -p"$TNYCL_MYSQL_PASSWORD" -N -B -e "SELECT VERSION();")
+          case "$version" in
+            8.*) echo "::notice title=mysql-server::真实服务端 MySQL $version（$TNYCL_MYSQL_HOST:$TNYCL_MYSQL_PORT）" ;;
+            *) echo "::error title=mysql-version::要求 MySQL 8.x，实际 $version"; exit 1 ;;
+          esac
+
+      - name: 配置（与主门禁同一套严格参数）
+        run: |
+          set +e
+          out=$(cmake -S backend -B "$BUILD_DIR" -G Ninja \
+                  -DCMAKE_BUILD_TYPE=Debug \
+                  -DCMAKE_C_COMPILER=gcc-13 \
+                  -DCMAKE_CXX_COMPILER=g++-13 \
+                  -DBUILD_WITH_STRICT_TOOLCHAIN=ON \
+                  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON 2>&1) || rc=$?
+          rc=${rc:-0}
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            printf '%s\n' "$out" | grep -E "CMake Error|error:" | head -3 | \
+              while IFS= read -r l; do echo "::error title=cmake-configure::${l}"; done
+          fi
+          exit "$rc"
+
+      - name: 编译
+        run: |
+          set +e
+          out=$(cmake --build "$BUILD_DIR" --parallel 2>&1) || rc=$?
+          rc=${rc:-0}
+          printf '%s\n' "$out"
+          if [ "$rc" -ne 0 ]; then
+            printf '%s\n' "$out" | grep -E "error:|Error [0-9]+$" | head -5 | \
+              while IFS= read -r l; do echo "::error title=compile::$(printf '%s' "$l" | cut -c1-300)"; done
+          fi
+          exit "$rc"
+
+      - name: 真实库端到端集成（建库 → V001 → V002×3 → 冲突 → 全部场景 → 清理）
+        run: bash backend/tools/ci/mysql_e2e.sh
+
+      # 反向对照：证明这套测试**真的在连库**，不是"永远绿的空转"。
+      # 连一个不存在的库必须失败；用错密码必须失败。若这两条也"通过"，
+      # 说明测试根本没建立连接，前面的绿是假的。
+      - name: 反向对照（连错库/错密码必须失败）
+        run: |
+          set -uo pipefail
+          exe=""
+          for c in "$BUILD_DIR/mysql_integration_test" "$BUILD_DIR/tests/mysql_integration_test"; do
+            if [ -x "$c" ]; then exe="$c"; break; fi
+          done
+          [ -n "$exe" ] || { echo "::error title=no-test-exe::未找到 mysql_integration_test"; exit 1; }
+
+          neg() {  # $1=说明 $2=DB 名 $3=密码
+            local log="/tmp/neg_$1.log"
+            local rc=0
+            if TNYCL_MYSQL_DB="$2" TNYCL_MYSQL_PASSWORD="$3" "$exe" >"$log" 2>&1; then
+              rc=0
+            else
+              rc=$?
+            fi
+            echo "--- 反向对照[$1] rc=$rc"
+            cat "$log"
+            if [ "$rc" -eq 0 ]; then
+              echo "::error title=negative-control::$1 竟然成功——测试没有真正连库，前面的通过不可信"
+              return 1
+            fi
+            if grep -q '^\[PASS\]' "$log"; then
+              echo "::error title=negative-control::$1 产出了 PASS 行，说明用例没有依赖真实连接"
+              return 1
+            fi
+            echo "[PASS] 反向对照[$1] 按预期失败（rc=$rc），证明测试确实连接了真实 MySQL"
+            return 0
+          }
+
+          neg wrong-db "definitely_not_exists_db" "$TNYCL_MYSQL_PASSWORD" || exit 1
+          neg wrong-password "$TNYCL_MYSQL_DB" "definitely_wrong_password" || exit 1
+
+      - name: Redis 7 容器仅作就绪声明（不作为 Redis 集成验收）
+        run: |
+          set +e
+          out=$(redis-cli -h 127.0.0.1 -p 6379 ping 2>&1)
+          echo "redis-cli ping -> $out"
+          if [ "$out" = "PONG" ]; then
+            echo "::notice title=redis-container-ready::Redis 7 容器可达（PONG）。真实 Redis 客户端尚未接入，本 job 不构成 Redis 集成验收；等 A 交付后另加 Redis 集成 job。"
+          else
+            echo "::warning title=redis-container::Redis 7 容器不可达（$out）。本 job 不依赖 Redis，不影响 E4 结论。"
+          fi
+          exit 0
+
+      - name: 保存集成日志与测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-integration-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ci-logs/**
+            backend/build/compile_commands.json
