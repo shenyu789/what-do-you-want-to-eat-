@@ -1,0 +1,41 @@
+# server.example.toml —— 示例配置（真实配置不入库，走环境变量 / 未跟踪文件）
+# 启动自检：business.timezone 必须 Asia/Shanghai；mysql.pool_size >= server.io_threads；
+#           cpu.argon2_memory_kb >= 19456。
+
+[server]
+bind = "0.0.0.0"
+port = 8080
+io_threads = 4
+max_connections = 2000
+keepalive_idle_sec = 75
+read_timeout_sec = 10
+max_body_bytes = 65536
+
+[mysql]
+host = "127.0.0.1"
+port = 3306
+db = "tnycl"
+user = "tnycl"
+password = ""            # 用环境变量 APP_MYSQL__PASSWORD 覆盖
+pool_size = 8
+acquire_timeout_ms = 200
+
+[redis]
+host = "127.0.0.1"
+port = 6379
+db = 0
+pool_size = 4
+
+[cpu]
+threads = 4
+argon2_memory_kb = 65536
+argon2_iterations = 3
+
+[business]
+timezone = "Asia/Shanghai"
+token_ttl_days = 7
+settle_cron = "MON 00:05"
+
+[auth_cache]
+local_lru_ttl_sec = 30
+local_lru_capacity = 10000
