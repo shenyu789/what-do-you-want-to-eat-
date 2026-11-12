@@ -60,6 +60,7 @@ jobs:
       - name: 环境诊断（只打印，不判定）
         working-directory: backend
         run: |
+          set +e   # GitHub 的 run 默认 bash -e，诊断步不需要它
           echo "pwd=$(pwd)"
           echo "bash=$BASH_VERSION"
           echo "grep=$(grep --version | head -1)"
@@ -69,14 +70,20 @@ jobs:
       - name: 静态检查有效性自检（证明六项检查不是假门禁）
         working-directory: backend
         run: |
-          set -uo pipefail
+          # 注意：GitHub 的 run 默认是 bash -e。`out=$(cmd); rc=$?` 在 cmd 非零时
+          # 会**当场终止脚本**，导致下面产不出 ::error 注释（v1 就踩了这个坑）。
+          # 必须写成 `|| rc=$?` 形式。
+          set +e   # 必须关掉 -e：否则任一项非零会当场终止，产不出 ::error
           fail=0
           for c in tools/checks/check_*.sh; do
-            out=$(bash "$c" --self-test 2>&1); rc=$?
-            echo "--- $c rc=$rc"; echo "$out"
-            if [ $rc -ne 0 ] || ! printf '%s' "$out" | grep -q 'SELFTEST PASS'; then
-              msg=$(printf '%s' "$out" | grep -E 'SELFTEST|✗|FAIL' | head -2 | tr '\n' ' ')
-              echo "::error file=$c,title=自检失败::rc=$rc ${msg}"
+            rc=0
+            out=$(bash "$c" --self-test 2>&1) || rc=$?
+            echo "--- $c rc=$rc"; printf '%s\n' "$out"
+            hit=no
+            if printf '%s' "$out" | grep -q 'SELFTEST PASS'; then hit=yes; fi
+            if [ "$rc" -ne 0 ] || [ "$hit" = no ]; then
+              msg=$(printf '%s' "$out" | grep -E 'SELFTEST|FAIL' | head -2 | tr '\n' ' ')
+              echo "::error file=$c,title=self-test-failed::rc=$rc $msg"
               fail=1
             fi
           done
@@ -85,14 +92,15 @@ jobs:
       - name: 六项静态检查（T-1.03）
         working-directory: backend
         run: |
-          set -uo pipefail
+          set +e   # 同上
           fail=0
           for c in tools/checks/check_*.sh; do
-            out=$(bash "$c" 2>&1); rc=$?
-            echo "--- $c rc=$rc"; echo "$out"
-            if [ $rc -ne 0 ]; then
-              msg=$(printf '%s' "$out" | grep -E '✗|FAIL|No such|Permission' | head -3 | tr '\n' ' ')
-              echo "::error file=$c,title=静态检查失败::rc=$rc ${msg}"
+            rc=0
+            out=$(bash "$c" 2>&1) || rc=$?
+            echo "--- $c rc=$rc"; printf '%s\n' "$out"
+            if [ "$rc" -ne 0 ]; then
+              msg=$(printf '%s' "$out" | grep -E 'FAIL|No such|Permission|command not found' | head -3 | tr '\n' ' ')
+              echo "::error file=$c,title=static-check-failed::rc=$rc $msg"
               fail=1
             fi
           done
